@@ -1,0 +1,13 @@
+{
+  "name": "aerotrust",
+  "version": "1.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "db:migrate:remote": "wrangler d1 migrations apply aerotrust-db --remote",
+    "db:migrate:local": "wrangler d1 migrations apply aerotrust-db --local"
+  },
+  "devDependencies": { "wrangler": "^4.40.0" }
+}

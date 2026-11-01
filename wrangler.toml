@@ -1,0 +1,13 @@
+name = "aerotrust"
+main = "src/index.js"
+compatibility_date = "2026-10-08"
+
+[vars]
+APP_NAME = "AeroTrust"
+GITHUB_REPOSITORY = "Darshine006/aerotrust-demo"
+
+[[d1_databases]]
+binding = "DB"
+database_name = "aerotrust-db"
+database_id = "REPLACE_WITH_YOUR_EXISTING_D1_DATABASE_ID"
+migrations_dir = "migrations"
