@@ -163,7 +163,7 @@ async function bootstrap(env,email,password){
 async function login(req,env){
  let b;try{b=await req.json();}catch{return json({error:"Invalid request"},400);}
  const email=String(b.email||"").trim().toLowerCase(),password=String(b.password||"");
- if(!/^[^\\s@]+@[^\\s@]+\\.[^\\s@]+$/.test(email)||password.length<12||password.length>256)return json({error:"Enter a valid email and a password of at least 12 characters."},400);
+ if(!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)||password.length<12||password.length>256)return json({error:"Enter a valid email and a password of at least 12 characters."},400);
  let u=await env.DB.prepare("SELECT * FROM users WHERE email=?").bind(email).first();
  if(!u){await bootstrap(env,email,password);u=await env.DB.prepare("SELECT * FROM users WHERE email=?").bind(email).first();}
  if(!u||await pwHash(password,u.password_salt)!==u.password_hash)return json({error:"Invalid email or password."},401);
