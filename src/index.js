@@ -204,6 +204,9 @@ export default {
     }
     if (request.method === "POST" && url.pathname === "/api/login") return login(request,env);
     if (request.method === "POST" && url.pathname === "/api/logout") return logout(request,env);
+    if (request.method === "GET" && env.ASSETS && (url.pathname === "/" || url.pathname.endsWith(".html"))) {
+      return env.ASSETS.fetch(request);
+    }
     if (url.pathname === "/" || url.pathname.startsWith("/api/")) {
       if(env.ACCESS_TEAM_DOMAIN&&env.ACCESS_AUD&&!await verifyAccess(request,env))return json({error:"Cloudflare Access authentication required or invalid"},403);
       const user=await sessionUser(request,env);
