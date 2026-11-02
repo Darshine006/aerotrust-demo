@@ -1,5 +1,7 @@
 # AeroTrust
 
+The product interface is served from `public/index.html` as a responsive multi-section presentation console. It includes a landing page, demo login, overview, eight sample PRs, detailed inspection with repeatable DEMO MODE scans, policy controls, audit history, CSV export and settings. Demo scan results are clearly labelled and are not real GitHub webhook decisions.
+
 **AeroTrust is a Cloudflare Worker that evaluates real GitHub pull-request webhook events using contribution-source and changed-file risk signals, then writes an auditable decision to Cloudflare D1.**
 
 This repository contains the live webhook path. There is no simulation endpoint in this version.
@@ -57,7 +59,7 @@ The existing `0001_init.sql` schema is retained. Apply the additive migration th
 npx wrangler d1 migrations apply aerotrust-db --remote
 ```
 
-The new `0003_application_auth.sql` migration creates the application users and sessions tables. Apply pending migrations to the existing database only after confirming the configured D1 database ID is the current production database. Do not recreate or replace the existing database.
+The `0003_application_auth.sql` migration creates the application users and sessions tables. `0004_policy_settings.sql` adds persistent policy configuration for the API policy controls. Apply pending migrations to the existing database only after confirming the configured D1 database ID is the current production database. Do not recreate or replace the existing database.
 
 ### 4. Optional second layer: Cloudflare Access application
 
