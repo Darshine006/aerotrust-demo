@@ -16,7 +16,7 @@ This repository contains the live webhook path. There is no simulation endpoint 
 5. Persists the decision, evidence paths, event metadata, and GitHub delivery ID in D1. The unique delivery ID makes webhook retries idempotent.
 6. Optionally posts the policy result as a comment on the real pull request when `GITHUB_TOKEN` is configured.
 
-## Zero Trust controls
+## Application login\n\nThe dashboard now has an application sign-in page backed by D1 users and sessions. Passwords are stored as PBKDF2-SHA256 hashes with per-user random salts; session cookies are HttpOnly, Secure, SameSite=Strict, and expire after 12 hours. The first administrator is bootstrapped only when the `users` table is empty and the submitted email/password match the `ADMIN_EMAIL` and `ADMIN_PASSWORD` Worker secrets. Configure these before deploying:\n\n```bash\nnpx wrangler secret put ADMIN_EMAIL\nnpx wrangler secret put ADMIN_PASSWORD\n```\n\nUse a unique strong password of at least 12 characters. Do not commit credentials or send them in chat. The first successful login creates the admin account; after that, the bootstrap secrets are no longer used for account creation.\n\n## Zero Trust controls
 
 - **Verify explicitly:** webhook authenticity is checked with HMAC-SHA256; dashboard and audit API requests require a valid Cloudflare Access JWT.
 - **Least privilege:** the webhook endpoint is public only because GitHub must reach it, and it accepts only correctly signed requests. Dashboard and audit endpoints are protected separately.
@@ -49,7 +49,7 @@ npx wrangler secret put GITHUB_TOKEN
 
 The token is optional for public-repository file retrieval. Without it, AeroTrust still evaluates and logs real events, but it cannot post a PR comment.
 
-### 3. Apply the D1 migration
+### 3. Apply the D1 migrations
 
 The existing `0001_init.sql` schema is retained. Apply the additive migration that adds webhook delivery IDs and indexes:
 
@@ -57,9 +57,9 @@ The existing `0001_init.sql` schema is retained. Apply the additive migration th
 npx wrangler d1 migrations apply aerotrust-db --remote
 ```
 
-Do this against the existing database before enabling the new webhook code.
+The new `0003_application_auth.sql` migration creates the application users and sessions tables. Apply pending migrations to the existing database only after confirming the configured D1 database ID is the current production database. Do not recreate or replace the existing database.
 
-### 4. Create the Cloudflare Access application
+### 4. Optional second layer: Cloudflare Access application
 
 In Cloudflare Zero Trust:
 
@@ -69,7 +69,7 @@ In Cloudflare Zero Trust:
 4. Set `ACCESS_TEAM_DOMAIN` to your Zero Trust team domain.
 5. Keep `/webhook/github` reachable by GitHub. The Worker validates GitHub HMAC itself; do not put an interactive Access login challenge in front of this webhook path. If the Access application is configured with path exclusions, exclude only `/webhook/github` and keep `/` and `/api/*` protected.
 
-The Worker independently verifies the `CF-Access-Jwt-Assertion` signature, issuer, audience, and expiry for dashboard/API requests. If the Access values are missing or invalid, those routes deny access.
+When the Access secrets are configured, the Worker independently verifies the `CF-Access-Jwt-Assertion` signature, issuer, audience, and expiry as an additional identity layer. Without those secrets, the D1-backed AeroTrust application login remains active. Do not describe application login as Cloudflare Zero Trust Access.
 
 ### 5. Deploy
 
@@ -97,8 +97,8 @@ The Worker supports `opened`, `reopened`, `synchronize`, and `ready_for_review`.
 |---|---|---|---|
 | GET | `/health` | Public | Non-sensitive service health |
 | POST | `/webhook/github` | Public + GitHub HMAC | Real GitHub webhook receiver |
-| GET | `/` | Cloudflare Access JWT | Protected audit dashboard |
-| GET | `/api/decisions` | Cloudflare Access JWT | Protected audit records |
+| GET | `/` | AeroTrust application session (+ optional Access JWT) | Protected audit dashboard |
+| POST | `/api/login` | Public, rate-limit recommended | Application sign-in |\n| POST | `/api/logout` | Application session | End session |\n| GET | `/api/decisions` | Application session (+ optional Access JWT) | Protected audit records |
 
 ## Demo flow for a research review
 
@@ -106,7 +106,7 @@ The Worker supports `opened`, `reopened`, `synchronize`, and `ready_for_review`.
 2. Add or modify an ordinary source file: expect **ALLOW** for an external fork.
 3. Open another PR from a fork that changes a file under `.github/workflows/`: expect **BLOCK**.
 4. Open another PR from a fork that changes `terraform/main.tf` or `kubernetes/deployment.yaml`: expect **REVIEW**.
-5. Show the actual GitHub webhook delivery response and the matching D1 audit row in the Access-protected dashboard.
+5. Sign in to the application dashboard, then show the actual GitHub webhook delivery response and matching D1 audit row.
 
 These are real GitHub pull requests and webhook deliveries, not calls to a demo/simulation endpoint. Use a test fork or disposable branches; do not merge risky test changes.
 
