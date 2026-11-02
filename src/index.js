@@ -142,7 +142,45 @@ async function handleWebhook(request, env) {
     changed_files: files, github_comment: comment });
 }
 
-async function dashboard(env) {
+
+const SESSION_HOURS = 12;
+const PBKDF2_ITERATIONS = 310000;
+const hex = b => [...new Uint8Array(b)].map(x=>x.toString(16).padStart(2,"0")).join("");
+async function sha(value){return hex(await crypto.subtle.digest("SHA-256",encoder.encode(value)));}
+function token(){return [...crypto.getRandomValues(new Uint8Array(32))].map(x=>x.toString(16).padStart(2,"0")).join("");}
+async function pwHash(password,salt){
+ const key=await crypto.subtle.importKey("raw",encoder.encode(password),"PBKDF2",false,["deriveBits"]);
+ return hex(await crypto.subtle.deriveBits({name:"PBKDF2",salt:encoder.encode(salt),iterations:PBKDF2_ITERATIONS,hash:"SHA-256"},key,256));
+}
+function cookie(req){const s=(req.headers.get("Cookie")||"").split(";").map(x=>x.trim()).find(x=>x.startsWith("aerotrust_session="));return s?decodeURIComponent(s.slice(17)):"";}
+function setCookie(t,age=43200){return "aerotrust_session="+encodeURIComponent(t)+"; Path=/; HttpOnly; Secure; SameSite=Strict; Max-Age="+age;}
+async function bootstrap(env,email,password){
+ const n=await env.DB.prepare("SELECT COUNT(*) AS n FROM users").first();
+ if(Number(n?.n||0)!==0||!env.ADMIN_EMAIL||!env.ADMIN_PASSWORD||email!==env.ADMIN_EMAIL.toLowerCase()||password!==env.ADMIN_PASSWORD)return;
+ const salt=token(),hash=await pwHash(password,salt);
+ await env.DB.prepare("INSERT INTO users(email,password_salt,password_hash,role) VALUES(?,?,?,'admin')").bind(email,salt,hash).run();
+}
+async function login(req,env){
+ let b;try{b=await req.json();}catch{return json({error:"Invalid request"},400);}
+ const email=String(b.email||"").trim().toLowerCase(),password=String(b.password||"");
+ if(!/^[^\\s@]+@[^\\s@]+\\.[^\\s@]+$/.test(email)||password.length<12||password.length>256)return json({error:"Enter a valid email and a password of at least 12 characters."},400);
+ let u=await env.DB.prepare("SELECT * FROM users WHERE email=?").bind(email).first();
+ if(!u){await bootstrap(env,email,password);u=await env.DB.prepare("SELECT * FROM users WHERE email=?").bind(email).first();}
+ if(!u||await pwHash(password,u.password_salt)!==u.password_hash)return json({error:"Invalid email or password."},401);
+ const t=token(),h=await sha(t),expires=new Date(Date.now()+SESSION_HOURS*3600000).toISOString();
+ await env.DB.prepare("INSERT INTO sessions(user_id,token_hash,expires_at) VALUES(?,?,?)").bind(u.id,h,expires).run();
+ return new Response(JSON.stringify({ok:true,user:{email:u.email,role:u.role}}),{headers:{"content-type":"application/json","cache-control":"no-store","set-cookie":setCookie(t)}});
+}
+async function logout(req,env){const t=cookie(req);if(t)await env.DB.prepare("DELETE FROM sessions WHERE token_hash=?").bind(await sha(t)).run();return new Response(JSON.stringify({ok:true}),{headers:{"content-type":"application/json","set-cookie":setCookie("",0),"cache-control":"no-store"}});}
+async function sessionUser(req,env){
+ const t=cookie(req);if(!/^[a-f0-9]{64}$/.test(t))return null;
+ return await env.DB.prepare("SELECT users.id,users.email,users.role FROM sessions JOIN users ON users.id=sessions.user_id WHERE sessions.token_hash=? AND sessions.expires_at>CURRENT_TIMESTAMP").bind(await sha(t)).first();
+}
+function loginPage(){
+ return \`<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>AeroTrust · Sign in</title><style>*{box-sizing:border-box}body{margin:0;min-height:100vh;display:grid;place-items:center;background:radial-gradient(ellipse at 50% 0,#203653,#0b1220 65%);color:#e8eef8;font:15px Inter,system-ui}.card{width:min(430px,calc(100% - 32px));padding:36px;background:#111c2c;border:1px solid #2b3d56;border-radius:20px;box-shadow:0 24px 80px #0007}.brand{display:flex;align-items:center;gap:12px;margin-bottom:30px}.mark{display:grid;place-items:center;width:48px;height:48px;background:#f5f7fb;color:#111c2c;border-radius:13px;font-size:25px;font-weight:800}.eyebrow{color:#79dfb4;font-size:11px;letter-spacing:1.5px;text-transform:uppercase}h1{margin:3px 0;font-size:25px}h2{margin-bottom:8px}p{color:#9fb0c8;line-height:1.6}.field{display:block;margin:18px 0 7px;color:#cbd6e5;font-size:13px}input{width:100%;padding:13px;background:#0b1423;border:1px solid #34445c;border-radius:9px;color:white;font:inherit}button{width:100%;padding:13px;margin-top:22px;border:0;border-radius:9px;background:#79e0b5;color:#092018;font-weight:750;font-size:15px;cursor:pointer}.error{color:#ff9999;min-height:20px;font-size:13px}.foot{text-align:center;color:#8294ad;font-size:12px;margin-top:24px}</style></head><body><main class="card"><div class="brand"><div class="mark">A</div><div><div class="eyebrow">Secure contribution gateway</div><h1>AeroTrust</h1></div></div><h2>Welcome back</h2><p>Sign in to review GitHub contribution risk, policy decisions and audit activity.</p><form id="login"><label class="field" for="email">Work email</label><input id="email" type="email" autocomplete="username" required placeholder="you@company.com"><label class="field" for="password">Password</label><input id="password" type="password" autocomplete="current-password" minlength="12" required placeholder="At least 12 characters"><div class="error" id="error" role="alert"></div><button>Sign in securely</button></form><div class="foot">AeroTrust · Security policy console</div></main><script>document.getElementById("login").addEventListener("submit",async e=>{e.preventDefault();const x=document.getElementById("error");x.textContent="Signing in…";try{const r=await fetch("/api/login",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({email:document.getElementById("email").value,password:document.getElementById("password").value})});const d=await r.json();if(!r.ok)throw Error(d.error||"Sign in failed");location.href="/";}catch(err){x.textContent=err.message;}});</script></body></html>\`;
+}
+
+async function dashboard(env,user) {
   const result = await env.DB.prepare("SELECT * FROM decisions ORDER BY id DESC LIMIT 100").all();
   return new Response(renderDashboard(result.results || []), { headers: { "content-type": "text/html; charset=utf-8", "cache-control": "no-store" } });
 }
@@ -154,23 +192,25 @@ function renderDashboard(rows) {
   const records = rows.map(r => `<tr><td>${esc(r.created_at)}</td><td>${esc(r.repository)}</td><td>#${esc(r.pr_number)}</td><td>${esc(r.contributor)}</td><td>${esc(r.source_type)}</td><td><b class="${esc(r.decision).toLowerCase()}">${esc(r.decision)}</b></td><td>${esc(r.reason)}</td><td><code>${esc(r.delivery_id || "legacy")}</code></td></tr>`).join("");
   return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>AeroTrust · Trust Console</title><style>
   *{box-sizing:border-box}body{margin:0;background:#0b1220;color:#e8eef8;font:14px Inter,system-ui,sans-serif}header{padding:30px 6%;border-bottom:1px solid #263247;background:#111c2e}h1{margin:0;font-size:28px;letter-spacing:-.6px}header p{color:#a8b7cc;margin:8px 0 0}.tag{color:#8be0c0;font-size:11px;letter-spacing:1.4px;text-transform:uppercase}main{padding:28px 6%;max-width:1600px;margin:auto}.grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:14px;margin:20px 0 30px}.metric{background:#121e30;border:1px solid #26364e;border-radius:12px;padding:18px}.metric span{color:#9fb0c8}.metric strong{display:block;font-size:30px;margin-top:8px}.allow{color:#6ee7a8}.review{color:#f6c66d}.block{color:#ff8585}.tablewrap{overflow:auto;border:1px solid #26364e;border-radius:12px}table{width:100%;border-collapse:collapse;min-width:1050px;background:#111c2c}th,td{text-align:left;padding:13px;border-bottom:1px solid #263247;vertical-align:top}th{color:#9fb0c8;background:#17253a;font-size:12px;text-transform:uppercase;letter-spacing:.6px}td{max-width:300px;line-height:1.5}code{font-size:11px;color:#9fb0c8;overflow-wrap:anywhere}.note{color:#9fb0c8;margin-top:18px;line-height:1.6}.status{display:inline-block;border:1px solid #315a52;border-radius:20px;padding:5px 9px;color:#8be0c0;font-size:11px}@media(max-width:650px){.grid{grid-template-columns:1fr}main{padding:20px 4%}}
-  </style></head><body><header><div class="tag">Cloudflare Workers · D1 · GitHub Webhooks · Zero Trust</div><h1>AeroTrust Trust Console</h1><p>Policy-based risk evaluation for untrusted GitHub contributions</p></header><main><span class="status">LIVE WEBHOOK AUDIT · ACCESS PROTECTED</span><section class="grid"><div class="metric"><span>ALLOW decisions</span><strong class="allow">${counts.ALLOW}</strong></div><div class="metric"><span>REVIEW decisions</span><strong class="review">${counts.REVIEW}</strong></div><div class="metric"><span>BLOCK decisions</span><strong class="block">${counts.BLOCK}</strong></div></section><h2>GitHub pull-request audit trail</h2><div class="tablewrap"><table><thead><tr><th>Received</th><th>Repository</th><th>PR</th><th>Author</th><th>Source</th><th>Decision</th><th>Policy rationale</th><th>Delivery ID</th></tr></thead><tbody>${records || "<tr><td colspan='8'>No verified GitHub pull-request events recorded yet.</td></tr>"}</tbody></table></div><p class="note">AeroTrust applies least-trust policy to contribution context. GitHub webhook authenticity is verified with HMAC-SHA256; dashboard and audit API access are validated with Cloudflare Access JWTs. ALLOW is not an automatic merge or deployment grant.</p></main></body></html>`;
+  </style></head><body><header><div class="tag">Cloudflare Workers · D1 · GitHub Webhooks · Zero Trust</div><h1>AeroTrust Trust Console</h1><p>Policy-based risk evaluation · Signed in as ${user.email}</p><button onclick="fetch('/api/logout',{method:'POST'}).then(()=>location.href='/')" style="float:right;background:#26364e;color:#e8eef8;padding:9px 14px;margin-top:-38px;width:auto">Sign out</button></header><main><span class="status">LIVE WEBHOOK AUDIT · AUTHENTICATED SESSION</span><section class="grid"><div class="metric"><span>ALLOW decisions</span><strong class="allow">${counts.ALLOW}</strong></div><div class="metric"><span>REVIEW decisions</span><strong class="review">${counts.REVIEW}</strong></div><div class="metric"><span>BLOCK decisions</span><strong class="block">${counts.BLOCK}</strong></div></section><h2>GitHub pull-request audit trail</h2><div style="display:flex;gap:10px;flex-wrap:wrap;margin:14px 0"><input id="q" placeholder="Search repository, contributor or reason" style="flex:1;min-width:220px;padding:11px;background:#111c2c;border:1px solid #34445c;border-radius:8px;color:#fff"><select id="f" style="padding:11px;background:#111c2c;border:1px solid #34445c;border-radius:8px;color:#fff"><option value="">All decisions</option><option>ALLOW</option><option>REVIEW</option><option>BLOCK</option></select></div><div class="tablewrap"><table><thead><tr><th>Received</th><th>Repository</th><th>PR</th><th>Author</th><th>Source</th><th>Decision</th><th>Policy rationale</th><th>Delivery ID</th></tr></thead><tbody>${records || "<tr><td colspan='8'>No verified GitHub pull-request events recorded yet.</td></tr>"}</tbody></table></div><p class="note">AeroTrust applies least-trust policy to contribution context. GitHub webhook authenticity is verified with HMAC-SHA256; dashboard and audit API access are validated with Cloudflare Access JWTs. ALLOW is not an automatic merge or deployment grant.</p></main><script>const q=document.getElementById('q'),f=document.getElementById('f');function filter(){document.querySelectorAll('tbody tr').forEach(r=>{const t=r.innerText.toLowerCase();r.hidden=!!((q.value&&!t.includes(q.value.toLowerCase()))||(f.value&&!t.includes(f.value.toLowerCase())));});}q.addEventListener('input',filter);f.addEventListener('change',filter);</script></body></html>`;
 }
 
 export default {
   async fetch(request, env) {
     const url = new URL(request.url);
-    if (request.method === "GET" && url.pathname === "/health") return json({ ok: true, service: "AeroTrust", webhook: "enabled", access_protection: !!(env.ACCESS_TEAM_DOMAIN && env.ACCESS_AUD) });
+    if (request.method === "GET" && url.pathname === "/health") return json({ok:true,service:"AeroTrust",webhook:"enabled",application_login:true,cloudflare_access:!!(env.ACCESS_TEAM_DOMAIN&&env.ACCESS_AUD)});
     if (request.method === "POST" && url.pathname === "/webhook/github") {
       try { return await handleWebhook(request, env); } catch (error) { return json({ error: "Webhook processing failed", detail: error.message }, 500); }
     }
+    if (request.method === "POST" && url.pathname === "/api/login") return login(request,env);
+    if (request.method === "POST" && url.pathname === "/api/logout") return logout(request,env);
     if (url.pathname === "/" || url.pathname.startsWith("/api/")) {
-      if (!await verifyAccess(request, env)) return json({ error: "Cloudflare Access authentication required or invalid", hint: "Configure ACCESS_TEAM_DOMAIN and ACCESS_AUD, and protect this hostname with a Cloudflare Access self-hosted application." }, 403);
-      if (request.method === "GET" && url.pathname === "/") return dashboard(env);
-      if (request.method === "GET" && url.pathname === "/api/decisions") {
-        const result = await env.DB.prepare("SELECT * FROM decisions ORDER BY id DESC LIMIT 100").all();
-        return json(result.results || []);
-      }
+      if(env.ACCESS_TEAM_DOMAIN&&env.ACCESS_AUD&&!await verifyAccess(request,env))return json({error:"Cloudflare Access authentication required or invalid"},403);
+      const user=await sessionUser(request,env);
+      if(!user){if(request.method==="GET"&&url.pathname==="/")return new Response(loginPage(),{headers:{"content-type":"text/html; charset=utf-8","cache-control":"no-store"}});return json({error:"Application login required"},401);}
+      if(request.method==="GET"&&url.pathname==="/")return dashboard(env,user);
+      if(request.method==="GET"&&url.pathname==="/api/session")return json({ok:true,user:{email:user.email,role:user.role}});
+      if(request.method==="GET"&&url.pathname==="/api/decisions"){const result=await env.DB.prepare("SELECT * FROM decisions ORDER BY id DESC LIMIT 100").all();return json(result.results||[]);}
     }
     return json({ error: "Not found" }, 404);
   }
