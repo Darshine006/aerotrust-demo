@@ -1,1 +1,2 @@
-console.log("Hello from AeroTrust test");
+// AeroTrust webhook test
+console.log("AeroTrust PR test");
